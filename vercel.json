@@ -1,11 +1,6 @@
 {
-  version 2,
-  builds [
-    {
-      src package.json,
-      use @vercelnext
-    }
-  ],
-  installCommand npm install --legacy-peer-deps,
-  buildCommand npm run build
+  "version": 2,
+  "buildCommand": "npm install --legacy-peer-deps && npm run build",
+  "installCommand": "npm install --legacy-peer-deps",
+  "framework": "nextjs"
 }
