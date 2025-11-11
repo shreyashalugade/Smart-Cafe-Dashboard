@@ -1,0 +1,1 @@
+export default function SuperAdminPanel() { return (<div className="p-6 text-gray-100">Super Admin panel removed.</div>); }

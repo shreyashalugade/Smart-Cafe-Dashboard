@@ -1,0 +1,427 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { saveAs } from 'file-saver';
+import { Download, FileText, Calendar } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card';
+import Button from '../ui/Button';
+import Select from '../ui/Select';
+import Input from '../ui/Input';
+import { collection, getDocs, query, where } from 'firebase/firestore';
+import { db } from '@/lib/firebase/config';
+import { formatCurrency, formatDate } from '@/lib/utils/helpers';
+import type { Order, Feedback } from '@/lib/types';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+
+type ReportType = 'sales' | 'inventory' | 'feedback';
+
+export default function ReportsView() {
+  const [reportType, setReportType] = useState<ReportType>('sales');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [reportData, setReportData] = useState<any[]>([]);
+
+  useEffect(() => {
+    const today = new Date();
+    const lastMonth = new Date(today);
+    lastMonth.setMonth(lastMonth.getMonth() - 1);
+    
+    setDateFrom(lastMonth.toISOString().split('T')[0]);
+    setDateTo(today.toISOString().split('T')[0]);
+  }, []);
+
+  const generateReport = async () => {
+    setLoading(true);
+    try {
+      if (reportType === 'sales') {
+        const ordersSnapshot = await getDocs(collection(db, 'orders'));
+        const orders: Order[] = ordersSnapshot.docs.map(doc => ({ 
+          id: doc.id, 
+          ...doc.data() 
+        } as Order));
+
+        const filteredOrders = orders.filter(order => {
+          const orderDate = order.createdAt.split('T')[0];
+          return orderDate >= dateFrom && orderDate <= dateTo;
+        });
+
+        setReportData(filteredOrders);
+      } else if (reportType === 'inventory') {
+        const inventorySnapshot = await getDocs(collection(db, 'inventory'));
+        const inventory = inventorySnapshot.docs.map(doc => ({ 
+          id: doc.id, 
+          ...doc.data() 
+        }));
+        setReportData(inventory);
+      } else if (reportType === 'feedback') {
+        const feedbackSnapshot = await getDocs(collection(db, 'feedback'));
+        const feedback: Feedback[] = feedbackSnapshot.docs.map(doc => ({ 
+          id: doc.id, 
+          ...doc.data() 
+        } as Feedback));
+
+        const filteredFeedback = feedback.filter(item => {
+          const feedbackDate = item.createdAt.split('T')[0];
+          return feedbackDate >= dateFrom && feedbackDate <= dateTo;
+        });
+
+        setReportData(filteredFeedback);
+      }
+    } catch (error) {
+      console.error('Error generating report:', error);
+      alert('Failed to generate report');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const exportToCSV = () => {
+    let csv = '';
+    let headers: string[] = [];
+    let rows: string[][] = [];
+
+    if (reportType === 'sales') {
+      headers = ['Order Number', 'Customer', 'Items', 'Total', 'Status', 'Payment', 'Date'];
+      rows = reportData.map((order: Order) => [
+        order.orderNumber,
+        order.customerName,
+        order.items.length.toString(),
+        order.total.toString(),
+        order.status,
+        order.paymentStatus,
+        formatDate(order.createdAt)
+      ]);
+    } else if (reportType === 'inventory') {
+      headers = ['Name', 'Category', 'Quantity', 'Unit', 'Min Stock', 'Price', 'Supplier'];
+      rows = reportData.map((item: any) => [
+        item.name,
+        item.category,
+        item.quantity.toString(),
+        item.unit,
+        item.minStock.toString(),
+        item.price.toString(),
+        item.supplier || ''
+      ]);
+    } else if (reportType === 'feedback') {
+      headers = ['Customer', 'Email', 'Rating', 'Category', 'Comment', 'Date'];
+      rows = reportData.map((feedback: Feedback) => [
+        feedback.customerName || '',
+        feedback.email || '',
+        feedback.rating.toString(),
+        feedback.category,
+        feedback.comment,
+        formatDate(feedback.createdAt)
+      ]);
+    }
+
+    csv = headers.join(',') + '\n';
+    rows.forEach(row => {
+      csv += row.map(cell => `"${cell}"`).join(',') + '\n';
+    });
+
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${reportType}_report_${dateFrom}_to_${dateTo}.csv`;
+    a.click();
+  };
+
+  const exportToPDF = () => {
+    const doc = new jsPDF();
+    
+    doc.setFontSize(18);
+    doc.text(`${reportType.charAt(0).toUpperCase() + reportType.slice(1)} Report`, 14, 20);
+    
+    doc.setFontSize(10);
+    doc.text(`Period: ${dateFrom} to ${dateTo}`, 14, 28);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 34);
+
+    if (reportType === 'sales') {
+      const tableData = reportData.map((order: Order) => [
+        order.orderNumber,
+        order.customerName,
+        order.items.length,
+        formatCurrency(order.total),
+        order.status,
+        order.paymentStatus
+      ]);
+
+      autoTable(doc, {
+        startY: 40,
+        head: [['Order #', 'Customer', 'Items', 'Total', 'Status', 'Payment']],
+        body: tableData,
+      });
+
+      const total = reportData.reduce((sum: number, order: Order) => sum + order.total, 0);
+      const finalY = (doc as any).lastAutoTable.finalY || 40;
+      doc.setFontSize(12);
+      doc.text(`Total Revenue: ${formatCurrency(total)}`, 14, finalY + 10);
+      doc.text(`Total Orders: ${reportData.length}`, 14, finalY + 18);
+    } else if (reportType === 'inventory') {
+      const tableData = reportData.map((item: any) => [
+        item.name,
+        item.category,
+        `${item.quantity} ${item.unit}`,
+        `${item.minStock} ${item.unit}`,
+        formatCurrency(item.price)
+      ]);
+
+      autoTable(doc, {
+        startY: 40,
+        head: [['Name', 'Category', 'Quantity', 'Min Stock', 'Price']],
+        body: tableData,
+      });
+    } else if (reportType === 'feedback') {
+      const tableData = reportData.map((feedback: Feedback) => [
+        feedback.customerName || 'Anonymous',
+        feedback.rating,
+        feedback.category,
+        feedback.comment.substring(0, 50) + (feedback.comment.length > 50 ? '...' : '')
+      ]);
+
+      autoTable(doc, {
+        startY: 40,
+        head: [['Customer', 'Rating', 'Category', 'Comment']],
+        body: tableData,
+      });
+
+      const avgRating = reportData.reduce((sum: number, f: Feedback) => sum + f.rating, 0) / reportData.length;
+      const finalY = (doc as any).lastAutoTable.finalY || 40;
+      doc.setFontSize(12);
+      doc.text(`Average Rating: ${avgRating.toFixed(2)}/5`, 14, finalY + 10);
+      doc.text(`Total Feedback: ${reportData.length}`, 14, finalY + 18);
+    }
+
+    doc.save(`${reportType}_report_${dateFrom}_to_${dateTo}.pdf`);
+  };
+
+  return (
+    <div className="space-y-6">
+      <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">Reports</h1>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Generate Report</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <Select
+                label="Report Type"
+                value={reportType}
+                onChange={(e) => setReportType(e.target.value as ReportType)}
+              >
+                <option value="sales">Sales Report</option>
+                <option value="inventory">Inventory Report</option>
+                <option value="feedback">Feedback Report</option>
+              </Select>
+
+              <Input
+                type="date"
+                label="From Date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+              />
+
+              <Input
+                type="date"
+                label="To Date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+              />
+            </div>
+
+            <Button
+              variant="primary"
+              onClick={generateReport}
+              disabled={loading}
+            >
+              <FileText className="w-4 h-4 mr-2" />
+              {loading ? 'Generating...' : 'Generate Report'}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {reportData.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle>Report Results</CardTitle>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={exportToCSV}>
+                  <Download className="w-4 h-4 mr-2" />
+                  Export CSV
+                </Button>
+                <Button variant="outline" onClick={exportToPDF}>
+                  <Download className="w-4 h-4 mr-2" />
+                  Export PDF
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-900/10 rounded-lg">
+              <p className="text-sm text-blue-800 dark:text-blue-200">
+                <strong>{reportData.length}</strong> records found
+                {reportType === 'sales' && (
+                  <span className="ml-4">
+                    Total Revenue: <strong>{formatCurrency(reportData.reduce((sum: number, order: Order) => sum + order.total, 0))}</strong>
+                  </span>
+                )}
+                {reportType === 'feedback' && (
+                  <span className="ml-4">
+                    Average Rating: <strong>{(reportData.reduce((sum: number, f: Feedback) => sum + f.rating, 0) / reportData.length).toFixed(2)}/5</strong>
+                  </span>
+                )}
+              </p>
+            </div>
+
+            <div className="overflow-x-auto">
+              {reportType === 'sales' && (
+                <table className="w-full">
+                  <thead className="bg-gray-50 dark:bg-gray-700">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Order #</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Customer</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Items</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Total</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Status</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                    {reportData.map((order: Order) => (
+                      <tr key={order.id}>
+                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">{order.orderNumber}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{order.customerName}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{order.items.length}</td>
+                        <td className="px-4 py-3 text-sm font-medium text-gray-900 dark:text-gray-100">{formatCurrency(order.total)}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{order.status}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{formatDate(order.createdAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              {reportType === 'inventory' && (
+                <table className="w-full">
+                  <thead className="bg-gray-50 dark:bg-gray-700">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Name</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Category</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Quantity</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Min Stock</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Price</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                    {reportData.map((item: any) => (
+                      <tr key={item.id}>
+                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">{item.name}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{item.category}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{item.quantity} {item.unit}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{item.minStock} {item.unit}</td>
+                        <td className="px-4 py-3 text-sm font-medium text-gray-900 dark:text-gray-100">{formatCurrency(item.price)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              {reportType === 'feedback' && (
+                <table className="w-full">
+                  <thead className="bg-gray-50 dark:bg-gray-700">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Customer</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Rating</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Category</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Comment</th>
+                      <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 dark:text-gray-300">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                    {reportData.map((feedback: Feedback) => (
+                      <tr key={feedback.id}>
+                        <td className="px-4 py-3 text-sm text-gray-900 dark:text-gray-100">{feedback.customerName || 'Anonymous'}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{feedback.rating}/5</td>
+                        <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{feedback.category}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{feedback.comment}</td>
+                        <td className="px-4 py-3 text-sm text-gray-700 dark:text-gray-300">{formatDate(feedback.createdAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+
+
+async function fetchDailyReportForCafe(cafeId: string, dateStr?: string) {
+  const rows: any[] = [];
+  try {
+    const dayStart = dateStr ? new Date(dateStr) : new Date();
+    dayStart.setHours(0,0,0,0);
+    const dayEnd = new Date(dayStart); dayEnd.setHours(23,59,59,999);
+    const { collection, query, where, getDocs, Timestamp } = await import('firebase/firestore');
+    const ordersRef = collection(db, `cafes/${cafeId}/orders`);
+    const q = query(ordersRef, where('createdAt', '>=', Timestamp.fromDate(dayStart)), where('createdAt', '<=', Timestamp.fromDate(dayEnd)));
+    const snap = await getDocs(q);
+    snap.forEach(doc => {
+      const d = doc.data() as any;
+      (d.items || []).forEach((item: any) => {
+        rows.push({
+          timestamp: d.createdAt?.toDate().toISOString() || '',
+          orderId: doc.id,
+          itemName: item.name || '',
+          qty: item.quantity || 0,
+          price: item.price || 0,
+          total: (item.quantity || 0) * (item.price || 0),
+        });
+      })
+    });
+  } catch(e) { console.error('fetchDailyReportForCafe error', e); }
+  return rows;
+}
+
+export async function downloadReport(format: 'pdf'|'csv'|'xlsx', cafeId: string, dateStr?: string) {
+  const reportData = await fetchDailyReportForCafe(cafeId, dateStr);
+  const filenameBase = `CafeReport_${dateStr || new Date().toISOString().slice(0,10)}`;
+  if (format === 'csv') {
+    const headers = ['Timestamp','OrderId','Item','Qty','Price','Total'];
+    const rows = reportData.map((r:any) => [r.timestamp, r.orderId, r.itemName, r.qty, r.price, r.total]);
+    const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""') }"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    saveAs(blob, `${filenameBase}.csv`);
+  } else if (format === 'xlsx') {
+    const ws = XLSX.utils.json_to_sheet(reportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Report');
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    saveAs(new Blob([wbout], { type: 'application/octet-stream' }), `${filenameBase}.xlsx`);
+  } else if (format === 'pdf') {
+    const doc = new jsPDF({ orientation: 'landscape' });
+    doc.setFontSize(10);
+    doc.text(`Report: ${filenameBase}`, 10, 10);
+    let y = 18;
+    const header = ['Timestamp','OrderId','Item','Qty','Price','Total'];
+    doc.setFontSize(8);
+    doc.text(header.join(' | '), 10, y); y += 6;
+    reportData.forEach((row:any) => {
+      const line = [row.timestamp, row.orderId, row.itemName, String(row.qty), String(row.price), String(row.total)].join(' | ');
+      doc.text(line, 10, y); y += 6;
+      if (y > 270) { doc.addPage(); y = 10; }
+    });
+    doc.save(`${filenameBase}.pdf`);
+  }
+}

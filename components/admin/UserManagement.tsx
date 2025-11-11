@@ -1,0 +1,1 @@
+export default function UserManagement() { return (<div className="p-6 text-gray-100">User Management has been removed. Admin can manage cafes from the main dashboard.</div>); }
